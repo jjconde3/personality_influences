@@ -1,0 +1,494 @@
+---
+title: "initial_work_JC"
+author: "Jenny Conde"
+output: pdf_document
+---
+
+```{r libraries, include=FALSE, warning = FALSE}
+library(data.table)
+library(tidyverse)
+library(janitor)
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+library(tidyverse)
+library(lmtest)
+library(stargazer)
+library(sandwich)
+```
+
+# Load Data and Explore with Summary
+
+```{r load data, include = FALSE, warning = FALSE}
+d <- fread('../W241_Survey_Results_Clean.csv')
+```
+
+```{r}
+summary(d)
+```
+
+
+## Key Takeaways from Summary
+
+* All responses were complete (`progress` only equals 100, and `finished` only equals TRUE)
+* Need to convert some variables to factor variables (`how_old_are_you`, `what_is_your_gender`, `education_highest`, `familiar_with_test`, `taken_test_before`)
+* Some people took forever to finish the survey --> we should probably filter our data to those who responded in <= 15 minutes (approx 1,000 seconds)
+
+## Proportion Tables 
+
+```{r}
+prop.table(xtabs(~ what_is_your_gender, data = d))[1]
+prop.table(xtabs(~ how_old_are_you, data = d))
+prop.table(xtabs(~ education_highest + how_old_are_you, data = d))
+prop.table(xtabs(~ familiar_with_test, data = d))
+prop.table(xtabs(~ taken_test_before, data = d))
+(xtabs(~ familiar_with_test + taken_test_before, data = d))
+```
+
+## Modifying Covariates
+
+### Ideas of individuals to drop:
+* Those who took >15 minutes (1,000 seconds) to complete the survey
+* Those who responded not familiar with test but took test before
+
+### Add new columns for compliers and treatment
+
+```{r define vars for who received treatment and who complied}
+d[, complier := ifelse(((d[, dob_day] %% 2 == 1) & (d[, compliance_q_glass] == 'Confetti (colored)')) | 
+                         ((d[, dob_day] %% 2 == 0) & (d[, compliance_q_mclaughlin] == 'Fish')), TRUE, FALSE)]
+d[, treatment := ifelse(d[, dob_day] %% 2 == 0, 'treatment', 'control')]
+```
+
+## Covariate Graphs
+
+Notes
+
+* There is a gender imbalance, but I think this is not a concern since men and women have relatively similar personality traits across both treatment and control
+* The treatment group had more non-compliers than the control group. Perhaps this is because our treatment video was emotional and potentially triggering to some.
+* Treatment group is smaller overall -- could be helpful to compare percentages across treatment and control groups for covariate balance checks rather than raw numbers
+
+```{r, warning = FALSE}
+d %>% ggplot(aes(x = duration_in_seconds)) + 
+  geom_histogram() + theme_minimal() +
+  labs(title = 'Time to Complete Survey',
+       x = 'time (sec)') | 
+  
+  d[d[, duration_in_seconds] < 1000] %>% 
+  ggplot(aes(x = duration_in_seconds)) + geom_histogram() + 
+  labs(title = 'Time to Complete Survey (Filtered)',
+       x = 'time (sec)') + 
+  theme_minimal()
+```
+
+```{r hhi histogram, warning = FALSE}
+d %>% filter(
+  hhi >= 0
+) %>% ggplot(aes(x = hhi)) + geom_histogram() + theme_minimal() +
+  labs(title = 'Survey respondents skewed towards lower income families',
+       x = 'household income factor variable')
+```
+
+
+```{r}
+d %>% ggplot(aes(x = treatment)) + geom_bar() +
+  theme_minimal() +
+  labs(title = 'Treatment vs Control Distribution') +
+  geom_text(aes(label = ..count..), stat = "count", vjust = -0.2)
+```
+
+
+```{r}
+d %>% ggplot(aes(x = complier, fill = treatment)) + geom_bar(position = 'dodge') +
+  theme_minimal() +
+  labs(title = 'Compliers in Treatment and Control Groups')
+```
+
+
+```{r plot dist of personality types, warning = FALSE}
+((d %>% ggplot(aes(x = personality_a)) + geom_histogram() + theme_minimal()) |
+  (d %>% ggplot(aes(x = personality_c)) + geom_histogram() + theme_minimal()) |
+  (d %>% ggplot(aes(x = personality_e)) + geom_histogram() + theme_minimal())) / 
+  (d %>% ggplot(aes(x = personality_n)) + geom_histogram() + theme_minimal() |
+     (d %>% ggplot(aes(x = personality_o)) + geom_histogram() + theme_minimal()))
+```
+
+```{r}
+d %>% ggplot(aes(x = what_is_your_gender, fill = treatment)) + geom_bar(position = 'dodge') +
+  theme_minimal() +
+  labs(title = 'Gender distribution in treatment and control groups',
+       x = 'Gender',
+       fill = "Assignment")
+```
+
+```{r, warning = FALSE}
+means <- d[treatment == 'control', .(mean(personality_a)), keyby = what_is_your_gender]
+d %>% filter(
+  treatment != 'control'
+) %>% ggplot(aes(x = personality_a, color = what_is_your_gender)) + 
+  geom_density() + 
+  theme_minimal() +
+  geom_vline(data = means, aes(xintercept = means$V1, color = what_is_your_gender),
+             linetype = "dashed") + 
+  labs(title = "Agreeableness distribution by gender",
+       color = "Gender",
+       x = "Agreeableness")
+```
+
+```{r, warning = FALSE}
+means <- d[treatment == 'control', .(mean(personality_c)), keyby = what_is_your_gender]
+d %>% filter(
+  treatment != 'control'
+) %>% ggplot(aes(x = personality_c, color = what_is_your_gender)) + 
+  geom_density() + 
+  theme_minimal() +
+  geom_vline(data = means, aes(xintercept = means$V1, color = what_is_your_gender),
+             linetype = "dashed") + 
+  labs(title = "Conscientiousness distribution by gender",
+       color = "Gender",
+       x = "Conscientiousness")
+```
+
+```{r, warning = FALSE}
+means <- d[treatment == 'control', .(mean(personality_e)), keyby = what_is_your_gender]
+d %>% filter(
+  treatment != 'control'
+) %>% ggplot(aes(x = personality_e, color = what_is_your_gender)) + 
+  geom_density() + 
+  theme_minimal() +
+  geom_vline(data = means, aes(xintercept = means$V1, color = what_is_your_gender),
+             linetype = "dashed") + 
+  labs(title = "Extraversion distribution by gender",
+       color = "Gender",
+       x = "Extraversion")
+```
+
+```{r, warning = FALSE}
+means <- d[treatment == 'control', .(mean(personality_n)), keyby = what_is_your_gender]
+d %>% filter(
+  treatment != 'control'
+) %>% ggplot(aes(x = personality_n, color = what_is_your_gender)) + 
+  geom_density() + 
+  theme_minimal() +
+  geom_vline(data = means, aes(xintercept = means$V1, color = what_is_your_gender),
+             linetype = "dashed") + 
+  labs(title = "Neuroticism distribution by gender",
+       legend = "Gender",
+       x = "Neuroticism")
+```
+
+```{r, warning = FALSE}
+means <- d[treatment == 'control', .(mean(personality_o)), keyby = what_is_your_gender]
+d %>% filter(
+  treatment != 'control'
+) %>% ggplot(aes(x = personality_o, color = what_is_your_gender)) + 
+  geom_density() + 
+  theme_minimal() +
+  geom_vline(data = means, aes(xintercept = means$V1, color = what_is_your_gender),
+             linetype = "dashed") + 
+  labs(title = "Openness distribution by gender",
+       color = "Gender",
+       x = "Openness")
+```
+
+```{r educ dist}
+d %>% ggplot(aes(x = education_highest)) + geom_bar() + theme_minimal()
+```
+
+```{r}
+d %>% ggplot(aes(x = familiar_with_test, fill = treatment)) + 
+  geom_bar(position = 'dodge') + 
+  ylim(0, 230) +
+  theme_minimal() +
+  labs(x = "Familiar with Test") +
+  theme(legend.position = "none") |
+  d %>% ggplot(aes(x = taken_test_before, fill = treatment)) + 
+  geom_bar(position = 'dodge') + 
+  ylim(0, 230) +
+  theme_minimal() +
+  labs(x = "Taken Test Before") +
+  theme(axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank())
+```
+
+
+# Start Modeling
+
+
+
+```{r}
+compliers_only <- d %>% filter(
+  complier == TRUE
+)
+coeftest(compliers_only[, lm(personality_e ~ treatment)])[1:2, ]
+coeftest(compliers_only[, lm(personality_a ~ treatment)])[1:2, ]
+coeftest(compliers_only[, lm(personality_c ~ treatment)])[1:2, ]
+coeftest(compliers_only[, lm(personality_n ~ treatment)])[1:2, ]
+coeftest(compliers_only[, lm(personality_o ~ treatment)])[1:2, ]
+```
+
+```{r}
+filtered_d <- d %>% filter(
+  complier == TRUE,
+  duration_in_seconds <= 1000,
+  !(taken_test_before == 'Yes' & familiar_with_test == 'No')
+)
+```
+
+
+```{r}
+coeftest(filtered_d[, lm(personality_e ~ treatment + how_old_are_you + 
+                               what_is_your_gender + education_highest + 
+                               familiar_with_test + taken_test_before)])[1:2, ]
+coeftest(filtered_d[, lm(personality_a ~ treatment + how_old_are_you + 
+                               what_is_your_gender + education_highest + 
+                               familiar_with_test + taken_test_before)])[1:2, ]
+coeftest(filtered_d[, lm(personality_c ~ treatment + how_old_are_you + 
+                               what_is_your_gender + education_highest + 
+                               familiar_with_test + taken_test_before)])[1:2, ]
+coeftest(filtered_d[, lm(personality_n ~ treatment + how_old_are_you + 
+                               what_is_your_gender + education_highest + 
+                               familiar_with_test + taken_test_before)])[1:2, ]
+coeftest(filtered_d[, lm(personality_o ~ treatment + how_old_are_you + 
+                               what_is_your_gender + education_highest + 
+                               familiar_with_test + taken_test_before)])[1:2, ]
+```
+
+
+```{r}
+coeftest(filtered_d[, lm(personality_e ~ treatment + how_old_are_you + 
+                           what_is_your_gender + education_highest + 
+                           familiar_with_test + taken_test_before +
+                           as.factor(ethnicity) + as.factor(hispanic) +
+                           as.factor(political_party) + as.factor(region))])[1:2, ]
+coeftest(filtered_d[, lm(personality_a ~ treatment + how_old_are_you + 
+                           what_is_your_gender + education_highest + 
+                           familiar_with_test + taken_test_before +
+                           as.factor(ethnicity) + as.factor(hispanic) +
+                           as.factor(political_party) + as.factor(region))])[1:2, ]
+coeftest(filtered_d[, lm(personality_c ~ treatment + how_old_are_you + 
+                           what_is_your_gender + education_highest + 
+                           familiar_with_test + taken_test_before +
+                           as.factor(ethnicity) + as.factor(hispanic) +
+                           as.factor(political_party) + as.factor(region))])[1:2, ]
+coeftest(filtered_d[, lm(personality_n ~ treatment + how_old_are_you + 
+                           what_is_your_gender + education_highest + 
+                           familiar_with_test + taken_test_before +
+                           as.factor(ethnicity) + as.factor(hispanic) +
+                           as.factor(political_party) + as.factor(region))])[1:2, ]
+coeftest(filtered_d[, lm(personality_o ~ treatment + how_old_are_you + 
+                           what_is_your_gender + education_highest + 
+                           familiar_with_test + taken_test_before +
+                           as.factor(ethnicity) + as.factor(hispanic) +
+                           as.factor(political_party) + as.factor(region))])[1:2, ]
+```
+
+```{r}
+filtered_d <- d %>% filter(
+  # complier == TRUE,
+  duration_in_seconds <= 1000,
+  !(taken_test_before == 'Yes' & familiar_with_test == 'No')
+)
+
+filtered_compliers <- filtered_d %>% filter(
+  complier == TRUE
+)
+```
+
+```{r print model results function, echo = FALSE, warning = FALSE, results = 'asis'}
+print_model_results <- function(personality_trait) {
+  personality_trait <- toupper(personality_trait)
+  if (personality_trait == 'A' | grepl("AGREE", personality_trait)) {
+    personality_trait = "Agreeableness"
+    
+    itt_mod_simple <- filtered_d[, lm(personality_a ~ treatment)]
+    itt_mod_covar <- filtered_d[, lm(personality_a ~ treatment + how_old_are_you + 
+                             what_is_your_gender + education_highest + 
+                             familiar_with_test + taken_test_before +
+                             as.factor(ethnicity) +
+                             as.factor(political_party) + as.factor(region))]
+    cace_mod_simple <- filtered_compliers[, lm(personality_a ~ treatment)]   
+    cace_mod_covar <- filtered_compliers[, lm(personality_a ~ treatment + 
+                                                how_old_are_you + 
+                             what_is_your_gender + education_highest + 
+                             familiar_with_test + taken_test_before +
+                             as.factor(ethnicity) +
+                             as.factor(political_party) + as.factor(region))]
+    
+  } else if (personality_trait == 'C' | grepl("CON", personality_trait)) {
+    personality_trait = "Conscientiousness"
+    
+    itt_mod_simple <- filtered_d[, lm(personality_c ~ treatment)]
+    itt_mod_covar <- filtered_d[, lm(personality_c ~ treatment + how_old_are_you + 
+                             what_is_your_gender + education_highest + 
+                             familiar_with_test + taken_test_before +
+                             as.factor(ethnicity) +
+                             as.factor(political_party) + as.factor(region))]
+    cace_mod_simple <- filtered_compliers[, lm(personality_c ~ treatment)]   
+    cace_mod_covar <- filtered_compliers[, lm(personality_c ~ treatment + 
+                                                how_old_are_you + 
+                             what_is_your_gender + education_highest + 
+                             familiar_with_test + taken_test_before +
+                             as.factor(ethnicity) +
+                             as.factor(political_party) + as.factor(region))]
+    
+  } else if (personality_trait == 'E' | grepl("EXTRA", personality_trait)) {
+    personality_trait = "Extraversion"
+    itt_mod_simple <- filtered_d[, lm(personality_e ~ treatment)]
+    itt_mod_covar <- filtered_d[, lm(personality_e ~ treatment + how_old_are_you + 
+                             what_is_your_gender + education_highest + 
+                             familiar_with_test + taken_test_before +
+                             as.factor(ethnicity) +
+                             as.factor(political_party) + as.factor(region))]
+    cace_mod_simple <- filtered_compliers[, lm(personality_e ~ treatment)]   
+    cace_mod_covar <- filtered_compliers[, lm(personality_e ~ treatment + 
+                                                how_old_are_you + 
+                             what_is_your_gender + education_highest + 
+                             familiar_with_test + taken_test_before +
+                             as.factor(ethnicity) +
+                             as.factor(political_party) + as.factor(region))]
+    
+  } else if (personality_trait == 'N' | grepl("NEUR", personality_trait)) {
+    personality_trait = "Neuroticism"
+    
+    itt_mod_simple <- filtered_d[, lm(personality_n ~ treatment)]
+    itt_mod_covar <- filtered_d[, lm(personality_n ~ treatment + how_old_are_you + 
+                             what_is_your_gender + education_highest + 
+                             familiar_with_test + taken_test_before +
+                             as.factor(ethnicity) +
+                             as.factor(political_party) + as.factor(region))]
+    cace_mod_simple <- filtered_compliers[, lm(personality_n ~ treatment)]   
+    cace_mod_covar <- filtered_compliers[, lm(personality_n ~ treatment + 
+                                                how_old_are_you + 
+                             what_is_your_gender + education_highest + 
+                             familiar_with_test + taken_test_before +
+                             as.factor(ethnicity) +
+                             as.factor(political_party) + as.factor(region))]
+    
+  } else if (personality_trait == 'O' | grepl("OPEN", personality_trait)) {
+    personality_trait = "Openness"
+    
+    itt_mod_simple <- filtered_d[, lm(personality_o ~ treatment)]
+    itt_mod_covar <- filtered_d[, lm(personality_o ~ treatment + how_old_are_you + 
+                             what_is_your_gender + education_highest + 
+                             familiar_with_test + taken_test_before +
+                             as.factor(ethnicity) +
+                             as.factor(political_party) + as.factor(region))]
+    cace_mod_simple <- filtered_compliers[, lm(personality_o ~ treatment)]   
+    cace_mod_covar <- filtered_compliers[, lm(personality_o ~ treatment + 
+                                                how_old_are_you + 
+                             what_is_your_gender + education_highest + 
+                             familiar_with_test + taken_test_before +
+                             as.factor(ethnicity) +
+                             as.factor(political_party) + as.factor(region))]
+    
+  } else {
+    return("INVALID PERSONALITY TYPE")
+  }
+  
+  itt_mod_simple_se <- sqrt(diag(vcovHC(itt_mod_simple, type = "HC1")))
+  itt_mod_covar_se <- sqrt(diag(vcovHC(itt_mod_covar, type = "HC1")))
+  cace_mod_simple_se <- sqrt(diag(vcovHC(cace_mod_simple, type = "HC1")))
+  cace_mod_covar_se <- sqrt(diag(vcovHC(cace_mod_covar, type = "HC1")))
+  
+  stargazer(itt_mod_simple, itt_mod_covar, cace_mod_simple, cace_mod_covar,
+            type = 'latex', 
+            se = list(itt_mod_simple_se, itt_mod_covar_se, 
+                      cace_mod_simple_se, cace_mod_covar_se),
+            omit = c("how_old_are_you", "what_is_your_gender",
+                     "education_highest", "familiar_with_test", "taken_test_before",
+                    "ethnicity", "political_party", "region"),
+            add.lines = list(c("Fixed effects?", "No", "Yes", "No", "Yes"),
+                             c("Treatment p value", 
+                               signif(coeftest(itt_mod_simple)[2, 4], digits = 3),
+                               signif(coeftest(itt_mod_covar)[2, 4], digits = 3), 
+                               signif(coeftest(cace_mod_simple)[2, 4], digits = 3),
+                               signif(coeftest(cace_mod_covar)[2, 4], digits = 3))),
+            column.labels = c("ITT", "ITT", "ATET", "ATET"),
+            covariate.labels = c("Treatment", "Constant"),
+            dep.var.labels = personality_trait,
+            omit.stat = c("f", "ser"),
+            star.cutoffs = c(0.05, 0.01, 0.001),
+            title = paste('Model Results for ', personality_trait),
+            header = FALSE)
+}
+```
+
+
+```{r, echo = FALSE, results = 'asis', warning = FALSE}
+print_model_results("A")
+print_model_results("C")
+print_model_results("E")
+print_model_results("N")
+print_model_results("O")
+```
+
+```{r, echo = FALSE, results = 'asis', warning = FALSE}
+print_all_mod_results <- function() {
+  a_mod <- filtered_compliers[, lm(personality_a ~ treatment + 
+                                                how_old_are_you + 
+                             what_is_your_gender + education_highest + 
+                             familiar_with_test + taken_test_before +
+                             as.factor(ethnicity) +
+                             as.factor(political_party) + as.factor(region))]
+  a_se <- sqrt(diag(vcovHC(a_mod, type = "HC1")))
+  
+  c_mod <- filtered_compliers[, lm(personality_c ~ treatment + 
+                                                how_old_are_you + 
+                             what_is_your_gender + education_highest + 
+                             familiar_with_test + taken_test_before +
+                             as.factor(ethnicity) +
+                             as.factor(political_party) + as.factor(region))]
+  c_se <- sqrt(diag(vcovHC(c_mod, type = "HC1")))
+  
+  e_mod <- filtered_compliers[, lm(personality_e ~ treatment + 
+                                                how_old_are_you + 
+                             what_is_your_gender + education_highest + 
+                             familiar_with_test + taken_test_before +
+                             as.factor(ethnicity) +
+                             as.factor(political_party) + as.factor(region))]
+  e_se <- sqrt(diag(vcovHC(e_mod, type = "HC1")))
+  
+  n_mod <- filtered_compliers[, lm(personality_n ~ treatment + 
+                                                how_old_are_you + 
+                             what_is_your_gender + education_highest + 
+                             familiar_with_test + taken_test_before +
+                             as.factor(ethnicity) +
+                             as.factor(political_party) + as.factor(region))]
+  n_se <- sqrt(diag(vcovHC(n_mod, type = "HC1")))
+  
+  o_mod <- filtered_compliers[, lm(personality_o ~ treatment + 
+                                                how_old_are_you + 
+                             what_is_your_gender + education_highest + 
+                             familiar_with_test + taken_test_before +
+                             as.factor(ethnicity) +
+                             as.factor(political_party) + as.factor(region))]
+  o_se <- sqrt(diag(vcovHC(o_mod, type = "HC1")))
+  
+  stargazer(a_mod, c_mod, e_mod, n_mod, o_mod,
+          type = 'latex', 
+          se = list(a_se, c_se, e_se, n_se, o_se),
+          omit = c("how_old_are_you", "what_is_your_gender",
+                   "education_highest", "familiar_with_test", "taken_test_before",
+                  "ethnicity", "political_party", "region"),
+          add.lines = list(c("Fixed effects?", "Yes", "Yes", "Yes", "Yes", "Yes"),
+                           c("Treatment p value", 
+                             signif(coeftest(a_mod)[2, 4], digits = 3),
+                             signif(coeftest(c_mod)[2, 4], digits = 3), 
+                             signif(coeftest(e_mod)[2, 4], digits = 3),
+                             signif(coeftest(n_mod)[2, 4], digits = 3),
+                             signif(coeftest(o_mod)[2, 4], digits = 3))),
+          dep.var.labels = c("Agreeableness", "Conscientiousness", "Extraversion", 
+                            "Neuroticism", "Openness"),
+          covariate.labels = c("Treatment", "Constant"),
+          omit.stat = c("f", "ser"),
+          star.cutoffs = c(0.05, 0.01, 0.001),
+          title = paste('ATET Model Results for All Personality Factors'),
+          header = FALSE)
+}
+```
+
+```{r, results = 'asis', warning = FALSE, echo = FALSE}
+print_all_mod_results()
+```
+
